@@ -1,0 +1,18 @@
+# Python cache
+__pycache__/
+
+# Generated data files (should be created by running your scripts)
+embeddings.pkl
+jsons/
+
+# Raw media files (these are usually too large for Git)
+audios/
+videos/
+
+# Any local files you don't want to share
+response.txt
+prompt.txt
+
+# (Optional) If you have a virtual environment folder
+venv/
+.venv/
