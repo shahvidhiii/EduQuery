@@ -80,17 +80,6 @@
         .timestamp { font-size:0.72rem; color: rgba(15,23,36,0.34); margin-left:8px; }
         .sources { margin-top:10px; font-size:0.85em; color:#374151; border-top:1px solid rgba(15,23,36,0.04); padding-top:8px; }
         .source { display:block; margin-top:6px; }
-        .bot-message .sources {
-            margin-top: 10px;
-            font-size: 0.85em;
-            color: #555;
-            border-top: 1px solid #ddd;
-            padding-top: 8px;
-        }
-        .bot-message .source {
-            display: block;
-            margin-top: 4px;
-        }
         #chat-form { display:flex; gap:12px; padding:16px; border-top:1px solid rgba(15,23,36,0.04); background:linear-gradient(180deg,rgba(255,255,255,0.9),rgba(255,255,255,0.95)); }
         #message-input { flex-grow:1; border:1px solid rgba(15,23,36,0.06); border-radius:999px; padding:12px 16px; font-size:0.98rem; outline:none; box-shadow: inset 0 -1px 0 rgba(15,23,36,0.02); }
         #message-input:focus { box-shadow: 0 6px 18px rgba(59,130,246,0.08); border-color: rgba(59,130,246,0.4); }
@@ -137,149 +126,118 @@
     </div>
 
     <script>
-        // Get references to the HTML elements
+        // Modern chat UI JavaScript (single, consistent implementation)
         const chatForm = document.getElementById('chat-form');
         const messageInput = document.getElementById('message-input');
         const chatWindow = document.getElementById('chat-window');
-        
-        // This is the URL of your local FastAPI server
-        const apiUrl = 'http://127.0.0.1:8000/ask';
+        const sendButton = document.getElementById('send-button');
+        const sendLabel = sendButton.querySelector('.send-label');
+        const dots = sendButton.querySelector('.dot-loader');
 
-        // Add event listener for form submission
+        const apiUrl = 'http://127.0.0.1:8000/ask';
+        let isSending = false;
+
         chatForm.addEventListener('submit', async function(e) {
-            e.preventDefault(); // Prevent the form from reloading the page
+            e.preventDefault();
+            if (isSending) return;
 
             const question = messageInput.value.trim();
-            if (!question) return; // Don't send empty messages
+            if (!question) return;
 
-            // 1. Display the user's message
-            addMessageToChat(question, 'user-message');
-            messageInput.value = ''; // Clear the input field
+            addMessageRow(question, 'user');
+            messageInput.value = '';
 
-            // 2. Send the question to the API
-            // Get references to the HTML elements
-            const chatForm = document.getElementById('chat-form');
-            const messageInput = document.getElementById('message-input');
-            const chatWindow = document.getElementById('chat-window');
-            const sendButton = document.getElementById('send-button');
-            const sendLabel = sendButton.querySelector('.send-label');
-            const dots = sendButton.querySelector('.dot-loader');
-        
-            // This is the URL of your local FastAPI server
-            const apiUrl = 'http://127.0.0.1:8000/ask';
+            try {
+                setSending(true);
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ question })
+                });
 
-            let isSending = false;
-
-            // Add event listener for form submission
-            chatForm.addEventListener('submit', async function(e) {
-                e.preventDefault(); // Prevent the form from reloading the page
-                if (isSending) return;
-
-                const question = messageInput.value.trim();
-                if (!question) return; // Don't send empty messages
-
-                // 1. Display the user's message (with avatar)
-                addMessageRow(question, 'user');
-                messageInput.value = ''; // Clear the input field
-
-                // 2. Send the question to the API
-                try {
-                    setSending(true);
-
-                    const response = await fetch(apiUrl, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({ question })
-                    });
-
-                    if (!response.ok) {
-                        // Handle API errors
-                        const errorData = await response.json().catch(() => ({}));
-                        addMessageRow(`Error: ${errorData.detail || 'Could not get answer'}`, 'bot');
-                        return;
-                    }
-
-                    // 3. Get the JSON response and display it
-                    const data = await response.json();
-                    const formattedAnswer = (data.answer || '')
-                        .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>') // Convert **bold** to <b>
-                        .replace(/\n/g, '<br>'); // Convert newlines to <br>
-
-                    addMessageRow(formattedAnswer, 'bot', data.sources || []);
-
-                } catch (error) {
-                    console.error('Error:', error);
-                    addMessageRow('Sorry, I could not connect to the AI assistant. (Is the Python server running?)', 'bot');
-                } finally {
-                    setSending(false);
-                }
-            });
-
-            // UI helpers
-            function setSending(state) {
-                isSending = state;
-                sendButton.disabled = state;
-                if (state) { sendLabel.style.display = 'none'; dots.style.display = 'inline-block'; }
-                else { sendLabel.style.display = 'inline'; dots.style.display = 'none'; }
-            }
-
-            function formatTime(date = new Date()) {
-                return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            }
-
-            // Add a full message row with avatar and optional sources
-            function addMessageRow(text, who = 'bot', sources = []) {
-                const row = document.createElement('div');
-                row.className = 'message-row';
-
-                const avatar = document.createElement('div');
-                avatar.className = 'avatar ' + (who === 'user' ? 'user' : 'bot');
-                avatar.textContent = who === 'user' ? 'You' : 'A';
-
-                const messageDiv = document.createElement('div');
-                messageDiv.className = 'message ' + (who === 'user' ? 'user-message' : 'bot-message');
-
-                const p = document.createElement('p');
-                if (who === 'user') p.textContent = text;
-                else p.innerHTML = text; // bot allowed limited HTML (<b>, <br>)
-                messageDiv.appendChild(p);
-
-                const meta = document.createElement('div');
-                meta.className = 'meta';
-                meta.innerHTML = `<span class="timestamp">${formatTime()}</span>`;
-                messageDiv.appendChild(meta);
-
-                // Add sources if present and array
-                if (Array.isArray(sources) && sources.length > 0) {
-                    const sourcesDiv = document.createElement('div');
-                    sourcesDiv.className = 'sources';
-                    sourcesDiv.innerHTML = '<b>Sources:</b>';
-                    sources.forEach(source => {
-                        try {
-                            const sourceSpan = document.createElement('span');
-                            sourceSpan.className = 'source';
-                            const videoNum = source.video_number ?? source.videoNumber ?? 'Unknown';
-                            const title = source.title ?? 'Untitled';
-                            const startRaw = source.start_time ?? source.start ?? 0;
-                            const startNum = Number(startRaw);
-                            const startText = Number.isFinite(startNum) ? `${Math.round(startNum)}s` : 'unknown';
-                            sourceSpan.textContent = `Video ${videoNum}: ${title} (at ${startText})`;
-                            sourcesDiv.appendChild(sourceSpan);
-                        } catch (e) { console.warn('Skipping malformed source entry', source, e); }
-                    });
-                    messageDiv.appendChild(sourcesDiv);
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    addMessageRow(`Error: ${errorData.detail || 'Could not get answer'}`, 'bot');
+                    return;
                 }
 
-                if (who === 'user') {
-                    row.appendChild(messageDiv);
-                    row.appendChild(avatar);
-                } else {
-                    row.appendChild(avatar);
-                    row.appendChild(messageDiv);
-                }
+                const data = await response.json();
+                const formattedAnswer = (data.answer || '')
+                    .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
+                    .replace(/\n/g, '<br>');
 
-                chatWindow.appendChild(row);
-                chatWindow.scrollTop = chatWindow.scrollHeight;
+                addMessageRow(formattedAnswer, 'bot', data.sources || []);
+            } catch (err) {
+                console.error(err);
+                addMessageRow('Sorry, I could not connect to the AI assistant. (Is the Python server running?)', 'bot');
+            } finally {
+                setSending(false);
             }
+        });
+
+        function setSending(state) {
+            isSending = state;
+            sendButton.disabled = state;
+            if (state) { sendLabel.style.display = 'none'; dots.style.display = 'inline-block'; }
+            else { sendLabel.style.display = 'inline'; dots.style.display = 'none'; }
+        }
+
+        function formatTime(date = new Date()) {
+            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        }
+
+        function addMessageRow(text, who = 'bot', sources = []) {
+            const row = document.createElement('div');
+            row.className = 'message-row';
+
+            const avatar = document.createElement('div');
+            avatar.className = 'avatar ' + (who === 'user' ? 'user' : 'bot');
+            avatar.textContent = who === 'user' ? 'You' : 'A';
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message ' + (who === 'user' ? 'user-message' : 'bot-message');
+
+            const p = document.createElement('p');
+            if (who === 'user') p.textContent = text;
+            else p.innerHTML = text;
+            messageDiv.appendChild(p);
+
+            const meta = document.createElement('div');
+            meta.className = 'meta';
+            meta.innerHTML = `<span class="timestamp">${formatTime()}</span>`;
+            messageDiv.appendChild(meta);
+
+            if (Array.isArray(sources) && sources.length > 0) {
+                const sourcesDiv = document.createElement('div');
+                sourcesDiv.className = 'sources';
+                sourcesDiv.innerHTML = '<b>Sources:</b>';
+                sources.forEach(source => {
+                    try {
+                        const sourceSpan = document.createElement('span');
+                        sourceSpan.className = 'source';
+                        const videoNum = source.video_number ?? source.videoNumber ?? 'Unknown';
+                        const title = source.title ?? 'Untitled';
+                        const startRaw = source.start_time ?? source.start ?? 0;
+                        const startNum = Number(startRaw);
+                        const startText = Number.isFinite(startNum) ? `${Math.round(startNum)}s` : 'unknown';
+                        sourceSpan.textContent = `Video ${videoNum}: ${title} (at ${startText})`;
+                        sourcesDiv.appendChild(sourceSpan);
+                    } catch (e) { console.warn('Skipping malformed source entry', source, e); }
+                });
+                messageDiv.appendChild(sourcesDiv);
+            }
+
+            if (who === 'user') {
+                row.appendChild(messageDiv);
+                row.appendChild(avatar);
+            } else {
+                row.appendChild(avatar);
+                row.appendChild(messageDiv);
+            }
+
+            chatWindow.appendChild(row);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+    </script>
+</body>
+</html>
