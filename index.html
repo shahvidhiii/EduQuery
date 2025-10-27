@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Teaching Assistant</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f4f7f6;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        #chat-container {
+            width: 500px;
+            height: 700px;
+            background-color: #fff;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        #chat-window {
+            flex-grow: 1;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        .message {
+            padding: 10px 15px;
+            border-radius: 18px;
+            max-width: 75%;
+            line-height: 1.5;
+        }
+        .user-message {
+            background-color: #007bff;
+            color: white;
+            align-self: flex-end;
+            border-bottom-right-radius: 4px;
+        }
+        .bot-message {
+            background-color: #e9ecef;
+            color: #333;
+            align-self: flex-start;
+            border-bottom-left-radius: 4px;
+        }
+        .bot-message b {
+            color: #0056b3;
+        }
+        .bot-message .sources {
+            margin-top: 10px;
+            font-size: 0.85em;
+            color: #555;
+            border-top: 1px solid #ddd;
+            padding-top: 8px;
+        }
+        .bot-message .source {
+            display: block;
+            margin-top: 4px;
+        }
+        #chat-form {
+            display: flex;
+            padding: 15px;
+            border-top: 1px solid #eee;
+            background-color: #fcfcfc;
+        }
+        #message-input {
+            flex-grow: 1;
+            border: 1px solid #ccc;
+            border-radius: 20px;
+            padding: 10px 15px;
+            font-size: 1em;
+            outline: none;
+        }
+        #message-input:focus {
+            border-color: #007bff;
+        }
+        #send-button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            margin-left: 10px;
+            cursor: pointer;
+            font-size: 1.2em;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        #send-button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="chat-container">
+        <div id="chat-window">
+            <div class="message bot-message">
+                Hello! Ask me anything about your video lectures.
+            </div>
+        </div>
+        <form id="chat-form">
+            <input type="text" id="message-input" placeholder="Ask a question..." autocomplete="off">
+            <button id="send-button" type="submit">➤</button>
+        </form>
+    </div>
+
+    <script>
+        // Get references to the HTML elements
+        const chatForm = document.getElementById('chat-form');
+        const messageInput = document.getElementById('message-input');
+        const chatWindow = document.getElementById('chat-window');
+        
+        // This is the URL of your local FastAPI server
+        const apiUrl = 'http://127.0.0.1:8000/ask';
+
+        // Add event listener for form submission
+        chatForm.addEventListener('submit', async function(e) {
+            e.preventDefault(); // Prevent the form from reloading the page
+
+            const question = messageInput.value.trim();
+            if (!question) return; // Don't send empty messages
+
+            // 1. Display the user's message
+            addMessageToChat(question, 'user-message');
+            messageInput.value = ''; // Clear the input field
+
+            // 2. Send the question to the API
+            try {
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        question: question
+                    })
+                });
+
+                if (!response.ok) {
+                    // Handle API errors
+                    const errorData = await response.json();
+                    addMessageToChat(`Error: ${errorData.detail || 'Could not get answer'}`, 'bot-message');
+                    return;
+                }
+
+                // 3. Get the JSON response and display it
+                const data = await response.json();
+                
+                // Format the bot's answer (handles **bold** and newlines)
+                const formattedAnswer = data.answer
+                    .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>') // Convert **bold** to <b>
+                    .replace(/\n/g, '<br>'); // Convert newlines to <br>
+
+                addMessageToChat(formattedAnswer, 'bot-message', data.sources);
+
+            } catch (error) {
+                console.error('Error:', error);
+                addMessageToChat('Sorry, I couldn', 'bot-message');
+            }
+        });
+
+        // Helper function to add any message to the chat window
+        // Defensive: render user messages with textContent (avoid innerHTML for user input),
+        // and tolerate missing/invalid source fields from the API.
+        function addMessageToChat(text, className, sources = []) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message ' + className;
+
+            // Add the main answer
+            const answerParagraph = document.createElement('p');
+            if (className === 'user-message') {
+                // Render user input as plain text to avoid accidental HTML injection
+                answerParagraph.textContent = text;
+            } else {
+                // Bot message may contain <b> and <br> tags intentionally
+                answerParagraph.innerHTML = text;
+            }
+            messageDiv.appendChild(answerParagraph);
+
+            // Add sources if they exist and are an array
+            if (Array.isArray(sources) && sources.length > 0) {
+                const sourcesDiv = document.createElement('div');
+                sourcesDiv.className = 'sources';
+                sourcesDiv.innerHTML = '<b>Sources:</b>';
+
+                sources.forEach(source => {
+                    try {
+                        const sourceSpan = document.createElement('span');
+                        sourceSpan.className = 'source';
+
+                        // Support different possible key names and coerce start time to number
+                        const videoNum = source.video_number ?? source.videoNumber ?? 'Unknown';
+                        const title = source.title ?? 'Untitled';
+                        const startRaw = source.start_time ?? source.start ?? 0;
+                        const startNum = Number(startRaw);
+                        const startText = Number.isFinite(startNum) ? `${Math.round(startNum)}s` : 'unknown';
+
+                        sourceSpan.textContent = `Video ${videoNum}: ${title} (at ${startText})`;
+                        sourcesDiv.appendChild(sourceSpan);
+                    } catch (e) {
+                        // If a single source fails, skip it but don't break the whole UI
+                        console.warn('Skipping malformed source entry', source, e);
+                    }
+                });
+                messageDiv.appendChild(sourcesDiv);
+            }
+
+            chatWindow.appendChild(messageDiv);
+
+            // Auto-scroll to the bottom
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+    </script>
+
+</body>
+</html>
