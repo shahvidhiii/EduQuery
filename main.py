@@ -54,7 +54,7 @@ def create_embedding(text):
         r.raise_for_status()
         embedding = r.json().get('embedding')
         return embedding, None  # Return embedding, no error
-        
+
     except requests.exceptions.ConnectionError:
         print("\n--- ERROR: Could not connect to Ollama. Is it running? ---")
         return None, "OLLAMA_NOT_RUNNING"
