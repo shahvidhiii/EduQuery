@@ -1,4 +1,5 @@
 # Local-Video-RAG — AI Teaching Assistant (Local Video RAG)
+<img width="1241" height="774" alt="image" src="https://github.com/user-attachments/assets/e188aea4-cab3-4825-82c6-a487bdb64157" />
 
 A small project that extracts chunks from lecture videos, builds embeddings, and provides a local web UI to ask questions about the video content. The backend is a FastAPI server that finds relevant chunks and asks a local LLM (Ollama) for a formulated answer. This repo includes a polished frontend `index_v2.html` you can preview locally.
 
