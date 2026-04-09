@@ -648,7 +648,8 @@
         const videoModalClose = document.getElementById('video-modal-close');
 
         let isSending = false;
-        const conversationHistory = [];
+        const STORAGE_KEY = 'eduquery_chat_history';
+        let conversationHistory = [];
 
         // Configure marked for safe rendering
         marked.setOptions({
@@ -678,34 +679,78 @@
                 backendBadge.querySelector('.status-dot').style.background = '#ff6b6b';
             });
 
+        // ─── LocalStorage Persistence ───
+        function saveHistory() {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(conversationHistory));
+        }
+
+        function loadHistory() {
+            const stored = localStorage.getItem(STORAGE_KEY);
+            if (stored) {
+                try {
+                    const parsed = JSON.parse(stored);
+                    if (Array.isArray(parsed)) {
+                        conversationHistory = parsed;
+                        // Clear welcome message and render history
+                        chatWindow.innerHTML = '';
+                        conversationHistory.forEach(msg => {
+                            addMessageRow(msg.content, msg.role, msg.sources || [], false, msg.timestamp);
+                        });
+                        if (conversationHistory.length === 0) renderWelcome();
+                    }
+                } catch (e) {
+                    console.error("Failed to load history", e);
+                    renderWelcome();
+                }
+            } else {
+                renderWelcome();
+            }
+        }
+
+        function renderWelcome() {
+            chatWindow.innerHTML = `
+                <div class="message-row">
+                    <div class="avatar bot">EQ</div>
+                    <div class="message bot-message">
+                        <p><strong>Hello!</strong> Ask me anything about your video lectures.</p>
+                        <span class="meta">I'll find the answer and link you directly to the video timestamp.</span>
+                    </div>
+                </div>
+            `;
+        }
+
         // ─── Clear Chat ───
         clearBtn.addEventListener('click', () => {
             if (confirm("Clear this conversation?")) {
-                conversationHistory.length = 0;
-                chatWindow.innerHTML = `
-                    <div class="message-row">
-                        <div class="avatar bot">EQ</div>
-                        <div class="message bot-message">
-                            <p><strong>Clean slate!</strong> What can I help you find in the videos?</p>
-                        </div>
-                    </div>
-                `;
+                conversationHistory = [];
+                saveHistory();
+                renderWelcome();
             }
         });
 
         // ─── Video Modal ───
         function openVideoModal(videoUrl, title, startTime) {
-            const fullUrl = `${API_BASE}${videoUrl.split('#')[0]}`;
+            // Remove hash from URL to get clean source path
+            const cleanUrl = videoUrl.split('#')[0];
+            const fullUrl = cleanUrl.startsWith('http') ? cleanUrl : `${API_BASE}${cleanUrl}`;
+            
+            // Set source and title
             videoPlayer.src = fullUrl;
             videoModalTitle.textContent = title || 'Video Player';
             videoModalSubtitle.textContent = `Starting at ${formatTimestamp(startTime)}`;
             videoOverlay.style.display = 'flex';
 
-            videoPlayer.addEventListener('loadedmetadata', function seekOnLoad() {
+            const onLoadedMetadata = () => {
                 videoPlayer.currentTime = startTime;
-                videoPlayer.play().catch(() => {});
-                videoPlayer.removeEventListener('loadedmetadata', seekOnLoad);
-            });
+                videoPlayer.play().catch(e => console.warn("Auto-play blocked:", e));
+            };
+
+            // If metadata already loaded, seek immediately
+            if (videoPlayer.readyState >= 1) {
+                onLoadedMetadata();
+            } else {
+                videoPlayer.addEventListener('loadedmetadata', onLoadedMetadata, { once: true });
+            }
         }
 
         function closeVideoModal() {
@@ -855,8 +900,10 @@
             if (!question) return;
 
             // Add user message
-            addMessageRow(question, 'user');
-            conversationHistory.push({ role: 'user', content: question });
+            const timestamp = formatTime();
+            addMessageRow(question, 'user', [], false, timestamp);
+            conversationHistory.push({ role: 'user', content: question, timestamp });
+            saveHistory();
             messageInput.value = '';
 
             try {
@@ -865,7 +912,10 @@
                 const response = await fetch(apiUrl, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ question, history: conversationHistory })
+                    body: JSON.stringify({ 
+                        question, 
+                        history: conversationHistory.map(h => ({ role: h.role, content: h.content })) 
+                    })
                 });
 
                 if (!response.ok) {
@@ -879,6 +929,7 @@
                 const contentArea = botRow.querySelector('.bot-content');
                 const sourcesDiv = botRow.querySelector('.sources-container');
                 const thinkingEl = botRow.querySelector('.thinking-indicator');
+                let sources = [];
 
                 // Read the NDJSON stream
                 const reader = response.body.getReader();
@@ -903,7 +954,8 @@
                             switch (data.type) {
                                 case 'sources':
                                     // Render source pills immediately
-                                    renderSources(sourcesDiv, data.sources);
+                                    sources = data.sources;
+                                    renderSources(sourcesDiv, sources);
                                     break;
 
                                 case 'token':
@@ -964,11 +1016,17 @@
                     } catch(e) {}
                 }
 
-                // Final render (ensure cursor is removed)
                 contentArea.innerHTML = marked.parse(fullAnswer);
                 if (thinkingEl && thinkingEl.parentNode) thinkingEl.remove();
 
-                conversationHistory.push({ role: 'assistant', content: fullAnswer });
+                const botTimestamp = formatTime();
+                conversationHistory.push({ 
+                    role: 'assistant', 
+                    content: fullAnswer, 
+                    sources: sources,
+                    timestamp: botTimestamp 
+                });
+                saveHistory();
 
             } catch (err) {
                 console.error(err);
@@ -994,7 +1052,7 @@
             }
         }
 
-        function addMessageRow(text, who = 'bot', sources = [], isStreaming = false) {
+        function addMessageRow(text, who = 'bot', sources = [], isStreaming = false, timestamp = null) {
             const row = document.createElement('div');
             row.className = 'message-row' + (who === 'user' ? ' from-user' : '');
 
@@ -1039,7 +1097,8 @@
             // Timestamp
             const meta = document.createElement('div');
             meta.className = 'meta';
-            meta.innerHTML = `<span class="timestamp">${formatTime()}</span>`;
+            const displayTime = timestamp || formatTime();
+            meta.innerHTML = `<span class="timestamp">${displayTime}</span>`;
             messageDiv.appendChild(meta);
 
             row.appendChild(avatar);
@@ -1048,6 +1107,9 @@
             chatWindow.scrollTop = chatWindow.scrollHeight;
             return row;
         }
+
+        // ─── Initialize ───
+        loadHistory();
 
         // ─── Keyboard shortcut: Ctrl+L to clear ───
         document.addEventListener('keydown', (e) => {

@@ -396,9 +396,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount video directory
+# Mount static directories
 if os.path.isdir(VIDEO_DIR):
     app.mount("/videos", StaticFiles(directory=VIDEO_DIR), name="videos")
+
+# Mount audios and jsons for admin inspection
+if os.path.isdir(os.path.join(base_dir, "audios")):
+    app.mount("/audios", StaticFiles(directory=os.path.join(base_dir, "audios")), name="audios")
+if os.path.isdir(os.path.join(base_dir, "jsons")):
+    app.mount("/jsons", StaticFiles(directory=os.path.join(base_dir, "jsons")), name="jsons")
 
 
 # --- Endpoints ---
@@ -410,7 +416,13 @@ def read_root():
         "backend": app_state.get("backend", "unknown"),
         "video_serving": os.path.isdir(VIDEO_DIR),
         "docs": "/docs",
+        "admin": "/admin"
     }
+
+
+@app.get("/admin")
+async def get_admin_page():
+    return FileResponse(os.path.join(base_dir, "admin.html"))
 
 
 @app.get("/api/videos")
@@ -556,6 +568,148 @@ async def handle_ask_question(request: QueryRequest):
 
     return StreamingResponse(generate_response(), media_type="application/x-ndjson")
 
+
+# --- Admin API Endpoints ---
+
+@app.get("/api/admin/system")
+def get_admin_system():
+    """Detailed system status for admin."""
+    import chromadb
+    client = chromadb.PersistentClient(path=CHROMA_DB_DIR)
+    try:
+        collection = client.get_collection(name=CHROMA_COLLECTION)
+        chunk_count = collection.count()
+    except Exception:
+        chunk_count = 0
+
+    return {
+        "backend": app_state.get("backend", "none"),
+        "ollama_connected": True,  # Would need a real check
+        "chunk_count": chunk_count,
+        "video_dir": VIDEO_DIR,
+        "audio_dir": "audios",
+        "json_dir": "jsons",
+        "models": {
+            "embedding": EMBEDDING_MODEL,
+            "llm": LLM_MODEL
+        }
+    }
+
+
+@app.get("/api/admin/videos")
+def get_admin_videos():
+    """Scan all folders and return video status."""
+    videos = []
+    
+    # 1. Start with original video files
+    video_files = []
+    if os.path.isdir(VIDEO_DIR):
+        video_files = [f for f in os.listdir(VIDEO_DIR) if f.lower().endswith((".mp4", ".webm", ".mkv"))]
+    
+    # 2. Check audios
+    audio_files = []
+    audio_dir = os.path.join(base_dir, "audios")
+    if os.path.isdir(audio_dir):
+        audio_files = [f for f in os.listdir(audio_dir) if f.lower().endswith(".mp3")]
+        
+    # 3. Check jsons
+    json_files = []
+    json_dir = os.path.join(base_dir, "jsons")
+    if os.path.isdir(json_dir):
+        json_files = [f for f in os.listdir(json_dir) if f.lower().endswith(".json")]
+
+    for v in video_files:
+        v_base = os.path.splitext(v)[0]
+        v_norm = v_base.lower().replace(" ", "").replace("-", "").replace("_", "")
+        
+        # Fuzzy match for audios/jsons
+        # Check audios
+        matching_audio = next((a for a in audio_files if v_norm[:10] in a.lower().replace(" ", "").replace("-", "").replace("_", "")), None)
+        has_audio = matching_audio is not None
+        
+        # Check jsons
+        matching_json = next((j for j in json_files if v_norm[:10] in j.lower().replace(" ", "").replace("-", "").replace("_", "")), None)
+        has_json = matching_json is not None
+        
+        # Extract video number from matching JSON if available
+        video_num = ""
+        if matching_json:
+            try:
+                video_num = matching_json.split("_")[0]
+            except Exception:
+                pass
+        
+        videos.append({
+            "filename": v,
+            "has_audio": has_audio,
+            "has_json": has_json,
+            "status": "Ready" if has_json else ("Transcribing" if has_audio else "New"),
+            "video_number": video_num
+        })
+
+    return {"videos": videos}
+
+
+@app.get("/api/admin/data/chunks")
+def get_all_chunks(video_number: Optional[str] = None):
+    """Fetch chunks from ChromaDB for inspection."""
+    import chromadb
+    client = chromadb.PersistentClient(path=CHROMA_DB_DIR)
+    try:
+        collection = client.get_collection(name=CHROMA_COLLECTION)
+        
+        where_clause = {}
+        if video_number:
+            where_clause = {"video_number": video_number}
+            
+        results = collection.get(
+            where=where_clause,
+            include=["documents", "metadatas"]
+        )
+        
+        chunks = []
+        if results and results["ids"]:
+            for i, doc_id in enumerate(results["ids"]):
+                chunks.append({
+                    "id": doc_id,
+                    "text": results["documents"][i],
+                    "metadata": results["metadatas"][i]
+                })
+        
+        return {"chunks": chunks}
+    except Exception as e:
+        return {"chunks": [], "error": str(e)}
+
+
+from fastapi import UploadFile, File as FastAPIFile
+
+@app.post("/api/admin/upload")
+async def upload_video(file: UploadFile = FastAPIFile(...)):
+    """Upload a new video file."""
+    if not os.path.isdir(VIDEO_DIR):
+        os.makedirs(VIDEO_DIR, exist_ok=True)
+        
+    file_path = os.path.join(VIDEO_DIR, file.filename)
+    with open(file_path, "wb") as f:
+        f.write(await file.read())
+        
+    return {"message": f"Successfully uploaded {file.filename}", "filename": file.filename}
+
+
+@app.post("/api/admin/pipeline/process-all")
+async def process_all_pipeline():
+    import subprocess
+    import sys  # Added to get current Python path
+    
+    try:
+        # Using sys.executable ensures we stay inside your venv
+        subprocess.run([sys.executable, os.path.join(base_dir, "process_video.py")], check=True)
+        subprocess.run([sys.executable, os.path.join(base_dir, "create_chunks.py")], check=True)
+        subprocess.run([sys.executable, os.path.join(base_dir, "read_chunks_v2.py")], check=True)
+        
+        return {"message": "Pipeline completed successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Pipeline failed: {str(e)}")
 
 # --- Run the Server ---
 if __name__ == "__main__":
