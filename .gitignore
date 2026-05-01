@@ -27,3 +27,4 @@ docs/prompt.txt
 # (Optional) If you have a virtual environment folder
 venv/
 .venv/
+.env
