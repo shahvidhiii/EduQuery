@@ -4,14 +4,25 @@ __pycache__/
 # Generated data files (should be created by running your scripts)
 embeddings.pkl
 jsons/
+data/embeddings.pkl
+data/jsons/
+data/chroma_db/
+data/video_registry.json
+data/__pycache__/
 
 # Raw media files (these are usually too large for Git)
 audios/
 videos/
+video/
+data/audios/
+data/videos/
+data/legacy_video/
 
 # Any local files you don't want to share
 response.txt
 prompt.txt
+docs/response.txt
+docs/prompt.txt
 
 # (Optional) If you have a virtual environment folder
 venv/

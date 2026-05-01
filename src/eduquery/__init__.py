@@ -1,0 +1,2 @@
+"""EduQuery application package."""
+
