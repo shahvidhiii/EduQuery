@@ -1,4 +1,5 @@
 import os
+import asyncio
 import uvicorn
 import pandas as pd
 import numpy as np
@@ -21,7 +22,9 @@ from .paths import (
     EMBEDDINGS_FILE as DEFAULT_EMBEDDINGS_FILE,
     JSONS_DIR,
     PROJECT_ROOT,
+    QUERY_CACHE_FILE,
     SCRIPTS_DIR,
+    VIDEO_REGISTRY_FILE,
     VIDEOS_DIR,
     WEB_DIR,
 )
@@ -48,6 +51,7 @@ _video_dir = os.getenv("VIDEO_DIR", str(VIDEOS_DIR))
 VIDEO_DIR = _video_dir if os.path.isabs(_video_dir) else os.path.join(base_dir, _video_dir)
 AUDIO_DIR = str(AUDIOS_DIR)
 JSON_DIR = str(JSONS_DIR)
+REGISTRY_FILE = str(VIDEO_REGISTRY_FILE)
 
 # --- Pydantic Models ---
 
@@ -62,6 +66,54 @@ class Source(BaseModel):
     start_time: float
     end_time: Optional[float] = None
     video_url: Optional[str] = None
+
+
+# --- Query Cache ---
+
+CACHE_FILE = str(QUERY_CACHE_FILE)
+
+
+def _normalize_question(q: str) -> str:
+    """Normalize a question for cache lookup (lowercase, strip, collapse whitespace)."""
+    return re.sub(r'\s+', ' ', q.strip().lower())
+
+
+def _load_cache() -> dict:
+    """Load the query cache from disk."""
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_cache(cache: dict) -> None:
+    """Save the query cache to disk."""
+    os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(cache, f, indent=2, ensure_ascii=False)
+
+
+def cache_lookup(question: str) -> Optional[dict]:
+    """Check if a question has a cached answer. Returns {sources, answer} or None."""
+    cache = _load_cache()
+    key = _normalize_question(question)
+    return cache.get(key)
+
+
+def cache_store(question: str, sources: list, answer: str) -> None:
+    """Store a query result in the cache."""
+    cache = _load_cache()
+    key = _normalize_question(question)
+    cache[key] = {
+        "question": question.strip(),
+        "sources": sources,
+        "answer": answer,
+    }
+    _save_cache(cache)
+    print(f"  [Cache] Stored answer for: {question.strip()[:60]}...")
 
 
 # --- Helper Functions ---
@@ -182,6 +234,97 @@ def build_video_url(video_number: str, title: str, start_time: float) -> Optiona
     return None
 
 
+def load_video_registry() -> dict:
+    if os.path.exists(REGISTRY_FILE):
+        try:
+            with open(REGISTRY_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def save_video_registry(registry: dict) -> None:
+    os.makedirs(os.path.dirname(REGISTRY_FILE), exist_ok=True)
+    with open(REGISTRY_FILE, "w", encoding="utf-8") as f:
+        json.dump(registry, f, indent=4)
+
+
+def strip_number_prefix(filename: str) -> tuple[str, str]:
+    base = os.path.splitext(filename)[0]
+    parts = base.split("_", 1)
+    if len(parts) >= 2 and parts[0].isdigit():
+        return parts[0], parts[1]
+    return "", base
+
+
+def normalize_video_name(name: str) -> str:
+    return name.lower().replace(" ", "").replace("-", "").replace("_", "")
+
+
+def infer_video_number_from_artifacts(video_filename: str, audio_files: list[str], json_files: list[str]) -> str:
+    """Legacy fallback for projects created before video_registry.json existed."""
+    video_norm = normalize_video_name(os.path.splitext(video_filename)[0])
+    for file_list in (json_files, audio_files):
+        for artifact in file_list:
+            number, name_part = strip_number_prefix(artifact)
+            artifact_norm = normalize_video_name(name_part)
+            if artifact_norm and (
+                video_norm == artifact_norm
+                or (len(artifact_norm) >= 30 and video_norm.startswith(artifact_norm))
+            ):
+                return number
+    return ""
+
+
+def next_video_number(registry: dict, audio_files: list[str], json_files: list[str]) -> str:
+    numbers = [int(v) for v in registry.values() if str(v).isdigit()]
+    for artifact in [*audio_files, *json_files]:
+        number, _ = strip_number_prefix(artifact)
+        if number.isdigit():
+            numbers.append(int(number))
+    return str(max(numbers, default=0) + 1).zfill(2)
+
+
+def ensure_registry_entry(video_filename: str, audio_files: list[str], json_files: list[str]) -> str:
+    registry = load_video_registry()
+    if video_filename in registry:
+        return str(registry[video_filename]).zfill(2)
+
+    inferred = infer_video_number_from_artifacts(video_filename, audio_files, json_files)
+    registry[video_filename] = inferred or next_video_number(registry, audio_files, json_files)
+    save_video_registry(registry)
+    return registry[video_filename]
+
+
+def remove_numbered_artifacts(video_number: str) -> None:
+    for folder, extension in ((AUDIO_DIR, ".mp3"), (JSON_DIR, ".json")):
+        if not os.path.isdir(folder):
+            continue
+        for artifact in os.listdir(folder):
+            if artifact.startswith(f"{video_number}_") and artifact.lower().endswith(extension):
+                os.remove(os.path.join(folder, artifact))
+
+
+def remove_chromadb_entries(video_number: str, filename: str) -> None:
+    try:
+        import chromadb
+        client = chromadb.PersistentClient(path=CHROMA_DB_DIR)
+        collection = client.get_collection(name=CHROMA_COLLECTION)
+        ids = set()
+        for where_clause in ({"video_number": video_number}, {"source_filename": filename}):
+            try:
+                results = collection.get(where=where_clause)
+                ids.update(results.get("ids", []))
+            except Exception:
+                continue
+        if ids:
+            collection.delete(ids=list(ids))
+    except Exception:
+        pass
+
+
 # --- ChromaDB search function ---
 def search_chromadb(question: str, top_k: int = 3):
     """
@@ -195,6 +338,15 @@ def search_chromadb(question: str, top_k: int = 3):
         collection = client.get_collection(name=CHROMA_COLLECTION)
     except Exception:
         return None, f"ChromaDB collection '{CHROMA_COLLECTION}' not found. Run read_chunks_v2.py or use /api/migrate first."
+
+    # Check collection count to avoid NotEnoughElementsException
+    try:
+        count = collection.count()
+        if count == 0:
+            return [], None
+        top_k = min(top_k, count)
+    except Exception as e:
+        return None, f"Error checking collection size: {e}"
 
     question_embedding, err = create_embedding(question)
     if err:
@@ -344,7 +496,10 @@ async def lifespan(app: FastAPI):
         try:
             import chromadb
             client = chromadb.PersistentClient(path=CHROMA_DB_DIR)
-            collection = client.get_collection(name=CHROMA_COLLECTION)
+            collection = client.get_or_create_collection(
+                name=CHROMA_COLLECTION,
+                metadata={"hnsw:space": "cosine"},
+            )
             count = collection.count()
             print(f"  [OK] Collection '{CHROMA_COLLECTION}' loaded: {count} documents")
             app_state["backend"] = "chromadb"
@@ -496,6 +651,7 @@ def migrate_to_chromadb():
 async def handle_ask_question(request: QueryRequest):
     """
     Receives a question, finds relevant video chunks, and returns a streaming response.
+    Checks the query cache first for instant responses on repeated questions.
     
     Streaming protocol (NDJSON):
     1. {"type": "sources", "sources": [...]}     — sent first with relevant chunks
@@ -525,6 +681,22 @@ async def handle_ask_question(request: QueryRequest):
             yield json.dumps({"type": "token", "token": quick}) + "\n"
             yield json.dumps({"type": "done"}) + "\n"
         return StreamingResponse(quick_gen(), media_type="application/x-ndjson")
+
+    # --- Check query cache ---
+    cached = cache_lookup(request.question)
+    if cached:
+        print(f"  [Cache HIT] Serving cached answer")
+        async def cached_gen():
+            # Send sources
+            yield json.dumps({"type": "sources", "sources": cached["sources"]}) + "\n"
+            # Stream cached answer with realistic typing speed
+            words = cached["answer"].split(" ")
+            for i, word in enumerate(words):
+                token = word if i == 0 else " " + word
+                yield json.dumps({"type": "token", "token": token}) + "\n"
+                await asyncio.sleep(0.02)  # ~50 words/sec, fast but visible
+            yield json.dumps({"type": "done"}) + "\n"
+        return StreamingResponse(cached_gen(), media_type="application/x-ndjson")
 
     # RAG search
     if app_state.get("backend") == "chromadb":
@@ -568,22 +740,41 @@ async def handle_ask_question(request: QueryRequest):
             source["video_url"] = video_url
         sources.append(source)
 
-    # Streaming generator
+    # Streaming generator (with cache write-through)
     async def generate_response():
         # 1. Send sources first
         yield json.dumps({"type": "sources", "sources": sources}) + "\n"
 
-        # 2. Stream LLM tokens
+        # 2. Stream LLM tokens and collect full answer
+        full_answer = ""
         for token in ask_llm_stream(context_text, request.question, request.history):
+            full_answer += token
             yield json.dumps({"type": "token", "token": token}) + "\n"
 
         # 3. Signal completion
         yield json.dumps({"type": "done"}) + "\n"
 
+        # 4. Cache the result for future queries
+        if full_answer.strip():
+            cache_store(request.question, sources, full_answer)
+
     return StreamingResponse(generate_response(), media_type="application/x-ndjson")
 
 
 # --- Admin API Endpoints ---
+
+@app.get("/api/admin/cache")
+def get_admin_cache():
+    """Retrieve current cache contents."""
+    return _load_cache()
+
+@app.post("/api/admin/cache/clear")
+def clear_admin_cache():
+    """Clear query cache."""
+    if os.path.exists(QUERY_CACHE_FILE):
+        os.remove(QUERY_CACHE_FILE)
+    return {"message": "Cache cleared"}
+
 
 @app.get("/api/admin/system")
 def get_admin_system():
@@ -632,73 +823,55 @@ def get_admin_videos():
     if os.path.isdir(json_dir):
         json_files = [f for f in os.listdir(json_dir) if f.lower().endswith(".json")]
 
-    def normalize(name):
-        """Normalize a name for comparison: lowercase, strip spaces/hyphens/underscores."""
-        return name.lower().replace(" ", "").replace("-", "").replace("_", "")
-
-    def strip_number_prefix(filename):
-        """Strip the number prefix like '01_' from audio/json filenames and return (number, name_part)."""
-        base = os.path.splitext(filename)[0]
-        parts = base.split("_", 1)
-        if len(parts) >= 2 and parts[0].isdigit():
-            return parts[0], parts[1]
-        return "", base
-
-    def find_match(video_name, file_list):
-        """Find a file in the list whose name part (after stripping number prefix) matches the video name."""
-        v_norm = normalize(video_name)
-        for f in file_list:
-            _, name_part = strip_number_prefix(f)
-            f_norm = normalize(name_part)
-            # Match if one contains the other (handles truncated names from process_video.py)
-            if len(v_norm) > 0 and len(f_norm) > 0:
-                if v_norm.startswith(f_norm) or f_norm.startswith(v_norm):
-                    return f
-        return None
-
     for v in video_files:
-        v_base = os.path.splitext(v)[0]
-
-        # Find matching audio and json
-        matching_audio = find_match(v_base, audio_files)
+        video_num = ensure_registry_entry(v, audio_files, json_files)
+        matching_audio = next(
+            (a for a in audio_files if a.startswith(f"{video_num}_")),
+            None,
+        )
         has_audio = matching_audio is not None
-
-        matching_json = find_match(v_base, json_files)
+        matching_json = next(
+            (j for j in json_files if j.startswith(f"{video_num}_")),
+            None,
+        )
         has_json = matching_json is not None
-
-        # Extract video number from matching JSON if available
-        video_num = ""
-        if matching_json:
-            num, _ = strip_number_prefix(matching_json)
-            video_num = num
 
         videos.append({
             "filename": v,
             "has_audio": has_audio,
             "has_json": has_json,
             "status": "Ready" if has_json else ("Transcribing" if has_audio else "New"),
-            "video_number": video_num
+            "video_number": video_num,
+            "audio_file": matching_audio,
+            "json_file": matching_json,
         })
 
     return {"videos": videos}
 
 
 @app.get("/api/admin/data/chunks")
-def get_all_chunks(video_number: Optional[str] = None):
+def get_all_chunks(video_number: Optional[str] = None, filename: Optional[str] = None):
     """Fetch chunks from ChromaDB for inspection."""
     import chromadb
     client = chromadb.PersistentClient(path=CHROMA_DB_DIR)
     try:
         collection = client.get_collection(name=CHROMA_COLLECTION)
-        
-        where_clause = {}
+
+        def fetch(where_clause: dict):
+            kwargs = {"include": ["documents", "metadatas"]}
+            if where_clause:
+                kwargs["where"] = where_clause
+            return collection.get(**kwargs)
+
+        # Prefer video_number (always clean, no special characters)
+        # Fall back to source_filename if video_number is not provided
+        results = None
         if video_number:
-            where_clause = {"video_number": video_number}
-            
-        results = collection.get(
-            where=where_clause,
-            include=["documents", "metadatas"]
-        )
+            results = fetch({"video_number": video_number})
+        if (not results or not results.get("ids")) and filename:
+            results = fetch({"source_filename": filename})
+        if not results or not results.get("ids"):
+            results = fetch({})
         
         chunks = []
         if results and results["ids"]:
@@ -722,11 +895,23 @@ async def upload_video(file: UploadFile = FastAPIFile(...)):
     if not os.path.isdir(VIDEO_DIR):
         os.makedirs(VIDEO_DIR, exist_ok=True)
         
+    audio_files = [f for f in os.listdir(AUDIO_DIR)] if os.path.isdir(AUDIO_DIR) else []
+    json_files = [f for f in os.listdir(JSON_DIR)] if os.path.isdir(JSON_DIR) else []
+    video_number = ensure_registry_entry(file.filename, audio_files, json_files)
+
+    # A fresh upload with the same filename must not inherit stale chunks.
+    remove_numbered_artifacts(video_number)
+    remove_chromadb_entries(video_number, file.filename)
+
     file_path = os.path.join(VIDEO_DIR, file.filename)
     with open(file_path, "wb") as f:
         f.write(await file.read())
         
-    return {"message": f"Successfully uploaded {file.filename}", "filename": file.filename}
+    return {
+        "message": f"Successfully uploaded {file.filename}. Click Process to create chunks.",
+        "filename": file.filename,
+        "video_number": video_number,
+    }
 
 
 @app.post("/api/admin/pipeline/process-all")
@@ -734,12 +919,14 @@ async def process_all_pipeline():
     import subprocess
     import sys
 
-    try:
+    def run_pipeline():
         # process_video.py now skips already-processed videos automatically
         subprocess.run([sys.executable, str(SCRIPTS_DIR / "process_video.py")], check=True)
         subprocess.run([sys.executable, str(SCRIPTS_DIR / "create_chunks.py")], check=True)
         subprocess.run([sys.executable, str(SCRIPTS_DIR / "read_chunks_v2.py")], check=True)
 
+    try:
+        await asyncio.to_thread(run_pipeline)
         return {"message": "Pipeline completed successfully (already-processed videos were skipped)"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Pipeline failed: {str(e)}")
@@ -763,37 +950,30 @@ async def process_single_video_pipeline(filename: str):
 
     steps_completed = []
 
-    try:
+    def run_pipeline():
         # Step 1: Extract audio
-        result = subprocess.run(
+        subprocess.run(
             [sys.executable, str(SCRIPTS_DIR / "process_video.py"), filename],
             capture_output=True, text=True, check=True
         )
         steps_completed.append("audio_extraction")
 
-        # Step 2: Run cleanup to fix numbering if a new video shifted the order
-        # This ensures the new video and existing ones have unique, deterministic numbers.
-        result = subprocess.run(
-            [sys.executable, str(SCRIPTS_DIR / "cleanup_duplicates.py")],
-            capture_output=True, text=True, check=True
-        )
-        steps_completed.append("numbering_sync")
-
-        # Step 3: Transcribe with Whisper
-        result = subprocess.run(
+        # Step 2: Transcribe with Whisper
+        subprocess.run(
             [sys.executable, str(SCRIPTS_DIR / "create_chunks.py")],
             capture_output=True, text=True, check=True
         )
         steps_completed.append("transcription")
 
-        # Step 4: Ingest into ChromaDB
-        # We use --reset here to ensure any changed numbers are properly reflected in the DB
-        result = subprocess.run(
-            [sys.executable, str(SCRIPTS_DIR / "read_chunks_v2.py"), "--reset"],
+        # Step 3: Ingest into ChromaDB (incremental — only adds missing chunks)
+        subprocess.run(
+            [sys.executable, str(SCRIPTS_DIR / "read_chunks_v2.py")],
             capture_output=True, text=True, check=True
         )
         steps_completed.append("chromadb_ingestion")
 
+    try:
+        await asyncio.to_thread(run_pipeline)
         return {
             "message": f"Successfully processed '{filename}'",
             "steps": steps_completed,

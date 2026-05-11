@@ -281,6 +281,7 @@
                     const tr = document.createElement('tr');
                     const statusClass = `status-${v.status.toLowerCase()}`;
                     const isNew = v.status === 'New';
+                    const canView = v.has_json;
                     
                     tr.innerHTML = `
                         <td>${v.filename}</td>
@@ -296,7 +297,8 @@
                             <button class="btn btn-outline btn-view" 
                                     style="padding: 4px 10px; font-size: 0.8rem;" 
                                     data-filename="${v.filename}" 
-                                    data-number="${v.video_number}">View</button>
+                                    data-number="${v.video_number}"
+                                    ${canView ? '' : 'disabled'}>View</button>
                         </td>
                     `;
                     tbody.appendChild(tr);
@@ -307,7 +309,9 @@
                     b.onclick = () => processSingleVideo(b.getAttribute('data-filename'));
                 });
                 document.querySelectorAll('.btn-view').forEach(b => {
-                    b.onclick = () => viewChunks(b.getAttribute('data-filename'), b.getAttribute('data-number'));
+                    b.onclick = () => {
+                        if (!b.disabled) viewChunks(b.getAttribute('data-filename'), b.getAttribute('data-number'));
+                    };
                 });
 
             } catch (e) {
@@ -327,7 +331,10 @@
                     if (isNaN(parseInt(videoNum))) videoNum = filename.split('.')[0];
                 }
                 
-                const r = await fetch(`${API_BASE}/api/admin/data/chunks?video_number=${encodeURIComponent(videoNum)}`);
+                const params = new URLSearchParams();
+                params.set('filename', filename);
+                if (videoNum) params.set('video_number', videoNum);
+                const r = await fetch(`${API_BASE}/api/admin/data/chunks?${params.toString()}`);
                 const data = await r.json();
                 
                 const count = (data.chunks || []).length;
@@ -403,8 +410,13 @@
             console.log("Processing single video:", filename);
             showToast(`Processing '${filename}'...`);
             
-            const btns = document.querySelectorAll('.btn');
-            btns.forEach(b => b.disabled = true);
+            const btn = Array.from(document.querySelectorAll('.btn-process-single'))
+                .find(b => b.getAttribute('data-filename') === filename);
+            const originalHtml = btn ? btn.innerHTML : '';
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = '<div class="loader" style="width:14px;height:14px;"></div> Processing...';
+            }
             
             try {
                 const r = await fetch(`${API_BASE}/api/admin/pipeline/process-single?filename=${encodeURIComponent(filename)}`, { 
@@ -421,7 +433,10 @@
             } catch (e) {
                 showToast("Processing failed", "error");
             } finally {
-                btns.forEach(b => b.disabled = false);
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = originalHtml;
+                }
             }
         }
 

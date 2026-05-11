@@ -28,3 +28,4 @@ docs/prompt.txt
 venv/
 .venv/
 .env
+*.log

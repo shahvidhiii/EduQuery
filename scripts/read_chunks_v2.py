@@ -18,10 +18,9 @@ import requests
 import chromadb
 from dotenv import load_dotenv
 
-load_dotenv()
-
 # --- Configuration ---
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(base_dir, ".env"))
 data_dir = os.path.join(base_dir, "data")
 JSONS_FOLDER = os.getenv("JSON_DIR", os.path.join(data_dir, "jsons"))
 CHROMA_DB_DIR = os.getenv("CHROMA_DB_DIR", os.path.join(data_dir, "chroma_db"))
@@ -124,6 +123,7 @@ def ingest(reset: bool = False):
             metadatas_batch.append({
                 "video_number": str(chunk["number"]),
                 "title": chunk["title"],
+                "source_filename": chunk.get("source_filename", ""),
                 "start_time": float(chunk["start"]),
                 "end_time": float(chunk["end"]),
                 "source_file": json_file,

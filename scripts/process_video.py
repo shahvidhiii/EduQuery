@@ -2,9 +2,11 @@ import os
 import subprocess
 import sys
 import json
+from dotenv import load_dotenv
 
 # Define the source and destination folders
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(base_dir, ".env"))
 data_dir = os.path.join(base_dir, "data")
 video_folder = os.getenv("VIDEO_DIR", os.path.join(data_dir, "videos"))
 audio_folder = os.getenv("AUDIO_DIR", os.path.join(data_dir, "audios"))

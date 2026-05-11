@@ -1,0 +1,29 @@
+{
+  "where is cuckoo hashing taught?": {
+    "question": "where is cuckoo hashing taught?",
+    "sources": [
+      {
+        "video_number": "01",
+        "title": "01",
+        "start_time": 355.44,
+        "end_time": 380.96,
+        "video_url": "/videos/01_cuckoohashing.mp4#t=355"
+      },
+      {
+        "video_number": "01",
+        "title": "01",
+        "start_time": 285.6,
+        "end_time": 310.0,
+        "video_url": "/videos/01_cuckoohashing.mp4#t=285"
+      },
+      {
+        "video_number": "02",
+        "title": "02",
+        "start_time": 557.36,
+        "end_time": 583.12,
+        "video_url": "/videos/02_How%20Cuckoo%20Hashing%20Work%20Part%201.mp4#t=557"
+      }
+    ],
+    "answer": "Cuckoo hashing is primarily introduced in Video 01 of our course, specifically at around 355.44s and 285.60s. In this video, we learn about the basics of cuckoo hashing, including its pros and cons, how it avoids collisions in hash tables, and the golden rule of keeping tables less than half full.\n\nAdditionally, for a more in-depth explanation, you can watch Video 04, which covers the topic in more detail (around 355.44s).\n\nIt's also worth noting that a brief overview of cuckoo hashing is mentioned briefly in Video 02 at around 557.36s."
+  }
+}

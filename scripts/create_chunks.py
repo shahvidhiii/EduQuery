@@ -2,6 +2,7 @@ import whisper
 import os
 import json
 import torch
+from dotenv import load_dotenv
 
 # --- 1. Setup ---
 print("Checking for device...")
@@ -11,12 +12,30 @@ print(f"Using device: {device}")
 model_name = "base"
 # Use absolute paths based on this script's location
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(base_dir, ".env"))
 data_dir = os.path.join(base_dir, "data")
 audio_folder = os.getenv("AUDIO_DIR", os.path.join(data_dir, "audios"))
 json_folder = os.getenv("JSON_DIR", os.path.join(data_dir, "jsons"))
+registry_file = os.path.join(data_dir, "video_registry.json")
 os.makedirs(json_folder, exist_ok=True)
 
 MIN_CHUNK_CHARS = 300 
+
+
+def load_registry():
+    if os.path.exists(registry_file):
+        with open(registry_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    return {}
+
+
+def source_filename_for_number(number):
+    registry = load_registry()
+    for filename, registered_number in registry.items():
+        if str(registered_number).zfill(2) == str(number).zfill(2):
+            return filename
+    return ""
 
 # --- 2. Load Model (Only Once) ---
 print(f"Loading the '{model_name}' model (this may take a moment)...")
@@ -61,6 +80,7 @@ for audio_file in audio_files:
         # (base_name is already calculated above)
         number = base_name.split("_")[0]
         title = base_name.split("_")[1]
+        source_filename = source_filename_for_number(number)
 
         # --- 5. Transcribe File ---
         result = model.transcribe(
@@ -88,6 +108,7 @@ for audio_file in audio_files:
                 combined_chunks.append({
                     "number": number,
                     "title": title,
+                    "source_filename": source_filename,
                     "start": temp_start,
                     "end": segment["end"], 
                     "text": temp_text.strip()
